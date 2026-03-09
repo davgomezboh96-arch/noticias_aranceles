@@ -7,8 +7,8 @@
 
 set -e
 
-PYTHON_PATH="$SCRIPT_DIR/.venv/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON_PATH="$SCRIPT_DIR/.venv/bin/python"
 SCRIPT_PATH="$SCRIPT_DIR/noticias_aranceles.py"
 LOG_PATH="$SCRIPT_DIR/logs/cron.log"
 
