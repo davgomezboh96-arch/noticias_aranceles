@@ -261,7 +261,6 @@ def send_email(md_content: str, total: int, run_date: datetime, logger: logging.
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
-            server.set_debuglevel(1)
             server.ehlo()
             server.starttls()
             server.ehlo()
