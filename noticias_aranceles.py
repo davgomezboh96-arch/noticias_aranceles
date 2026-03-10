@@ -12,9 +12,15 @@ Author: David Gomez
 import feedparser
 import logging
 import os
+import smtplib
 import time
 from datetime import datetime, timezone, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -50,6 +56,13 @@ MAX_RETRIES     = 2    # Retries per feed on failure
 BASE_DIR   = Path(__file__).parent
 OUTPUT_DIR = BASE_DIR / "output"
 LOG_DIR    = BASE_DIR / "logs"
+
+# ---------------------------------------------------------------------------
+# Email configuration — set these in your .env file
+# ---------------------------------------------------------------------------
+EMAIL_SENDER    = os.environ.get("EMAIL_SENDER", "")       # your Gmail address
+EMAIL_PASSWORD  = os.environ.get("EMAIL_PASSWORD", "")     # Gmail App Password (16 chars)
+EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT", "")    # destination address
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +237,99 @@ def generate_markdown(results: dict[str, list[dict]], run_date: datetime) -> str
 
 
 # ---------------------------------------------------------------------------
+# Email sending
+# ---------------------------------------------------------------------------
+
+def send_email(md_content: str, total: int, run_date: datetime, logger: logging.Logger) -> None:
+    """
+    Sends the report as an HTML email via Gmail SMTP (TLS, port 587).
+    Reads credentials from EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT in .env.
+    """
+    if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
+        logger.warning("Email credentials not configured in .env — skipping send.")
+        return
+
+    subject = f"Tariff News — {run_date.strftime('%B %d, %Y')} ({total} article{'s' if total != 1 else ''})"
+    html_body = _md_to_html(md_content, run_date, total)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = EMAIL_SENDER
+    msg["To"]      = EMAIL_RECIPIENT
+    msg.attach(MIMEText(md_content, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+            server.set_debuglevel(1)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"Authentication failed — check App Password in .env: {e}")
+        raise
+    except smtplib.SMTPException as e:
+        logger.error(f"SMTP error: {e}")
+        raise
+    except OSError as e:
+        logger.error(f"Network error (port 587 blocked?): {e}")
+        raise
+
+    logger.info(f"Email sent to {EMAIL_RECIPIENT}")
+
+
+def _md_to_html(md: str, run_date: datetime, total: int) -> str:
+    """Converts the Markdown report to a simple styled HTML email body."""
+    css = """
+    <style>
+      body  { font-family: Segoe UI, Arial, sans-serif; font-size: 14px;
+              color: #222; max-width: 800px; margin: 0 auto; padding: 20px; }
+      h1    { color: #C00000; font-size: 20px; }
+      h2    { color: #2F5496; font-size: 15px; border-bottom: 1px solid #2F5496;
+              padding-bottom: 4px; margin-top: 28px; }
+      h3    { font-size: 14px; margin-bottom: 2px; }
+      h3 a  { color: #1a0dab; text-decoration: none; }
+      h3 a:hover { text-decoration: underline; }
+      em    { color: #888; font-size: 12px; }
+      p     { margin: 4px 0 12px; }
+      hr    { border: none; border-top: 1px solid #ddd; margin: 16px 0; }
+      .meta { background: #f0f4ff; border-left: 4px solid #2F5496;
+              padding: 10px 16px; margin-bottom: 16px; font-size: 13px; }
+    </style>"""
+
+    lines = md.splitlines()
+    html_lines = [f"<!DOCTYPE html><html><head><meta charset='utf-8'>{css}</head><body>"]
+
+    for line in lines:
+        if line.startswith("# "):
+            html_lines.append(f"<h1>{line[2:]}</h1>")
+        elif line.startswith("## "):
+            html_lines.append(f"<h2>{line[3:]}</h2>")
+        elif line.startswith("### "):
+            # Convert [title](url) to <a href>
+            inner = line[4:]
+            if inner.startswith("[") and "](" in inner:
+                title = inner[1:inner.index("]")]
+                url   = inner[inner.index("](") + 2 : inner.rindex(")")]
+                html_lines.append(f"<h3><a href='{url}'>{title}</a></h3>")
+            else:
+                html_lines.append(f"<h3>{inner}</h3>")
+        elif line.startswith("**") and line.endswith("**"):
+            html_lines.append(f"<div class='meta'>{line}</div>")
+        elif line.startswith("*") and line.endswith("*") and not line.startswith("**"):
+            html_lines.append(f"<em>{line.strip('*')}</em><br>")
+        elif line.strip() == "---":
+            html_lines.append("<hr>")
+        elif line.strip():
+            html_lines.append(f"<p>{line}</p>")
+
+    html_lines.append("</body></html>")
+    return "\n".join(html_lines)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -245,6 +351,8 @@ def main():
     output_file = OUTPUT_DIR / f"aranceles_{run_date.strftime('%Y-%m-%d')}.md"
     output_file.write_text(md_content, encoding="utf-8")
     logger.info(f"Report saved: {output_file}")
+
+    send_email(md_content, total, run_date, logger)
     logger.info("=== Scraper complete ===")
 
 
